@@ -27,12 +27,13 @@ function [results] = AutoTrack_optimized(params)
     zeta = params.zeta;
     newton_iterations = params.newton_iterations;
     featureRatio = params.t_global.cell_size;
-    search_area = prod(target_sz * search_area_scale);
+    search_area = prod(target_sz * search_area_scale); % prod 函数用于计算数组元素的乘积
     global_feat_params = params.t_global;
     nu = params.nu;
 
+    % 计算当前缩放系数
     if search_area > max_image_sample_size
-        currentScaleFactor = sqrt(search_area / max_image_sample_size);
+        currentScaleFactor = sqrt(search_area / max_image_sample_size); % sqrt计算平方根
     elseif search_area < min_image_sample_size
         currentScaleFactor = sqrt(search_area / min_image_sample_size);
     else
@@ -42,6 +43,7 @@ function [results] = AutoTrack_optimized(params)
     % target size at the initial scale
     base_target_sz = target_sz / currentScaleFactor;
     reg_sz = floor(base_target_sz / featureRatio);
+
     % window size, taking padding into account
     switch params.search_area_shape
         case 'proportional'
@@ -74,6 +76,7 @@ function [results] = AutoTrack_optimized(params)
     cos_window = single(hann(use_sz(1) + 2) * hann(use_sz(2) + 2)');
     cos_window = cos_window(2:end - 1, 2:end - 1);
 
+    % 确定图像颜色
     try
         im = imread([video_path '/img/' s_frames{1}]);
     catch
@@ -160,7 +163,9 @@ function [results] = AutoTrack_optimized(params)
     rect_position = zeros(num_frames, 4);
     time = 0;
     loop_frame = 1;
-
+    psr = 0;
+    spr = 0;
+    curscal_savce = 0;
     for frame = 1:num_frames
         %load image
         try
@@ -184,26 +189,42 @@ function [results] = AutoTrack_optimized(params)
         occ = false;
 
         if frame > 1
-            pixel_template = get_pixels(im, pos, round(sz * currentScaleFactor), sz);
-            xt = get_features(pixel_template, features, global_feat_params);
-            xtf = fft2(bsxfun(@times, xt, cos_window));
+            %% 1.Translation Estimation
+            pixel_template = get_pixels(im, pos, round(sz * currentScaleFactor), sz); %从当前帧提取像素模板
+            xt = get_features(pixel_template, features, global_feat_params); %获取像素模板的特征
+            xtf = fft2(bsxfun(@times, xt, cos_window)); %对特征进行加窗以减少边界效应和傅里叶变换
+            %通过将之前训练得到的滤波器g_f与当前帧的特征频域表示xtf的共轭相乘并求和，得到频域响应。permute函数用于重新排列维度，以便后续处理
             responsef = permute(sum(bsxfun(@times, conj(g_f), xtf), 3), [1 2 4 3]);
             % if we undersampled features, we want to interpolate the
             % response so it has the same size as the image patch
+            %果响应的尺寸小于图像补丁的尺寸（即特征被欠采样），则使用resizeDFT2函数对响应的频域表示进行插值，使其尺寸与图像补丁匹配。interp_sz是插值后的尺寸
             responsef_padded = resizeDFT2(responsef, interp_sz);
             % response in the spatial domain
+            %使用ifft2函数将频域响应responsef_padded逆变换回空间域，得到空间域响应response。'symmetric'参数确保了逆变换结果的对称性
             response = ifft2(responsef_padded, 'symmetric');
+            psr = calculatePSR(response);
+            spr = calculateSPR(response);
             % find maximum peak
+            %通过resp_newton函数寻找响应response的最大峰值的位置。ky和kx是用于构建网格的参数，newton_iterations是牛顿法的迭代次数。disp_row和disp_col表示相对于当前目标位置的最大响应位置的偏移量。
             [disp_row, disp_col] = resp_newton(response, responsef_padded, newton_iterations, ky, kx, use_sz);
+
             % update reference mu for Admm
             if frame > 2
+                % 将当前帧和前一帧的响应（response 和 response_pre）进行循环偏移。
+                % 偏移的量分别是 disp_row 和 disp_col，即目标在当前帧相对于前一帧的位移。通过这种方式，可以将响应调整到与目标实际位置一致的参考系
                 response_shift = circshift(response, [-floor(disp_row) -floor(disp_col)]);
                 response_pre_shift = circshift(response_pre, [-floor(disp_row_pre) -floor(disp_col_pre)]);
+
+                % 计算响应差
                 response_diff = abs(abs(response_shift - response_pre_shift) ./ response_pre_shift);
+
                 [ref_mu, occ] = updateRefmu(response_diff, zeta, nu, frame);
                 response_diff = circshift(response_diff, floor(size(response_diff) / 2));
+                % 计算目标区域内的响应方差 varience
                 varience = delta * log(response_diff(range_h, range_w) + 1);
-                w(range_h, range_w) = varience; %#ok<AGROW>
+
+                % 将计算得到的方差值赋给权重矩阵 w 中对应的目标区域部分
+                w(range_h, range_w) = varience;
             end
 
             % save response in last frame
@@ -253,15 +274,21 @@ function [results] = AutoTrack_optimized(params)
         if frame == 1
             [range_h, range_w, w] = init_regwindow(use_sz, reg_sz, params);
             g_pre = zeros(size(xf));
-            mu = 0;
+            mu = 0; % 时间正则化系数
         else
             mu = zeta;
         end
+        if frame>1 && psr<7.5
+            occ = true;
+            currentScaleFactor = currentScaleFactor * 1.25;
+        else
+
+        end
 
         if ~occ
-            g_f = single(zeros(size(xf)));
-            h_f = g_f;
-            l_f = h_f;
+            g_f = single(zeros(size(xf))); % 频域滤波更新
+            h_f = g_f; % 空间正则化系数
+            l_f = h_f; % ADMM 的拉格朗日乘子
             gamma = 1;
             betha = 10;
             gamma_max = 10000;
@@ -320,6 +347,7 @@ function [results] = AutoTrack_optimized(params)
         new_sf_den = sum(xsf .* conj(xsf), 1);
 
         if frame == 1
+            % 缩放滤波器分子和分母
             sf_den = new_sf_den;
             sf_num = new_sf_num;
         else
@@ -333,25 +361,24 @@ function [results] = AutoTrack_optimized(params)
 
         %%   visualization
         if visualization == 1
-            rect_position_vis = [pos([2, 1]) - target_sz([2, 1]) / 2, target_sz([2, 1])];
             figure(1);
             imshow(im);
-
-            if frame == 1
-                hold on;
-                rectangle('Position', rect_position_vis, 'EdgeColor', 'g', 'LineWidth', 2);
-                text(12, 26, ['# Frame : ' int2str(loop_frame) ' / ' int2str(num_frames)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
-                hold off;
-            else
-                hold on;
-                rectangle('Position', rect_position_vis, 'EdgeColor', 'g', 'LineWidth', 2);
-                text(12, 28, ['# Frame : ' int2str(loop_frame) ' / ' int2str(num_frames)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
-                text(12, 66, ['FPS : ' num2str(1 / (time / loop_frame))], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
-                text(12, 100, ['OCC : ' num2str(occ)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
-                hold off;
-            end
-
-            drawnow
+            hold on;
+        
+            rect_position_vis = [pos([2, 1]) - target_sz([2, 1]) / 2, target_sz([2, 1])];
+            rectangle('Position', rect_position_vis, 'EdgeColor', 'g', 'LineWidth', 2);
+        
+            search_rect_vis = [pos([2, 1]) - sz * currentScaleFactor / 2, sz * currentScaleFactor];
+            rectangle('Position', search_rect_vis, 'EdgeColor', 'r', 'LineWidth', 2);
+        
+            text(12, 30, ['# Frame : ' int2str(loop_frame) ' / ' int2str(num_frames)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
+            text(12, 70, ['FPS : ' num2str(1 / (time / loop_frame))], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
+            text(12, 110, ['PSR : ' num2str(psr)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
+            text(12, 150, ['SPR : ' num2str(spr)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
+        
+        
+            hold off;
+            drawnow;
         end
 
         loop_frame = loop_frame + 1;
@@ -362,5 +389,4 @@ function [results] = AutoTrack_optimized(params)
     results.type = 'rect';
     results.res = rect_position;
     results.fps = fps;
-
 end
