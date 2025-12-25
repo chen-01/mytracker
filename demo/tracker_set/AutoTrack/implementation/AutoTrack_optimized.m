@@ -1,52 +1,36 @@
-% This function implements the ASRCF tracker (AutoTrack).
-%
-% Input:
-%   params - Structure containing all the parameters for the tracker.
-%
-% Output:
-%   results - Structure containing the tracking results (positions and FPS).
+% This function implements the ASRCF tracker.
 
 function [results] = AutoTrack_optimized(params)
-
-    %% Parameter Extraction
-    % Optimization parameters
+    %   Setting parameters for local use.
     admm_iterations = params.admm_iterations;
-    lambda = params.admm_lambda;
-    epsilon = params.epsilon;
-    delta = params.delta;
-    zeta = params.zeta;
-    nu = params.nu;
-
-    % Scale parameters
     search_area_scale = params.search_area_scale;
     max_image_sample_size = params.max_image_sample_size;
     min_image_sample_size = params.min_image_sample_size;
     output_sigma_factor = params.output_sigma_factor;
+    % Scale parameters
     num_scales = params.num_scales;
     scale_sigma_factor = params.scale_sigma_factor;
     scale_step = params.scale_step;
     scale_lambda = params.scale_lambda;
     scale_model_factor = params.scale_model_factor;
     scale_model_max_area = params.scale_model_max_area;
-
-    % Feature parameters
+    lambda = params.admm_lambda;
     features = params.t_features;
-    featureRatio = params.t_global.cell_size;
-    global_feat_params = params.t_global;
-
-    % Video and processing parameters
     video_path = params.video_path;
     s_frames = params.s_frames;
     pos = floor(params.init_pos);
     target_sz = floor(params.wsize);
     visualization = params.visualization;
     num_frames = params.no_fram;
+    epsilon = params.epsilon;
+    delta = params.delta;
+    zeta = params.zeta;
     newton_iterations = params.newton_iterations;
-
-    %% Initialization
+    featureRatio = params.t_global.cell_size;
     search_area = prod(target_sz * search_area_scale);
+    global_feat_params = params.t_global;
+    nu = params.nu;
 
-    % Determine the initial scale factor
     if search_area > max_image_sample_size
         currentScaleFactor = sqrt(search_area / max_image_sample_size);
     elseif search_area < min_image_sample_size
@@ -55,11 +39,10 @@ function [results] = AutoTrack_optimized(params)
         currentScaleFactor = 1.0;
     end
 
-    % Target size at the initial scale
+    % target size at the initial scale
     base_target_sz = target_sz / currentScaleFactor;
     reg_sz = floor(base_target_sz / featureRatio);
-
-    % Calculate window size, taking padding into account
+    % window size, taking padding into account
     switch params.search_area_shape
         case 'proportional'
             sz = floor(base_target_sz * search_area_scale); % proportional area, same aspect ratio as the target
@@ -71,28 +54,38 @@ function [results] = AutoTrack_optimized(params)
             error('Unknown "params.search_area_shape". Must be ''proportional'', ''square'' or ''fix_padding''');
     end
 
-    % Set the size to exactly match the cell size
+    % set the size to exactly match the cell size
     sz = round(sz / featureRatio) * featureRatio;
     use_sz = floor(sz / featureRatio);
 
-    % Construct the label function - correlation output, 2D gaussian function
+    % construct the label function- correlation output, 2D gaussian function,
+    % with a peak located upon the target
+
     output_sigma = sqrt(prod(floor(base_target_sz / featureRatio))) * output_sigma_factor;
     rg = circshift(-floor((use_sz(1) - 1) / 2):ceil((use_sz(1) - 1) / 2), [0 -floor((use_sz(1) - 1) / 2)]);
     cg = circshift(-floor((use_sz(2) - 1) / 2):ceil((use_sz(2) - 1) / 2), [0 -floor((use_sz(2) - 1) / 2)]);
     [rs, cs] = ndgrid(rg, cg);
     y = exp(-0.5 * (((rs .^ 2 + cs .^ 2) / output_sigma ^ 2)));
-    yf = fft2(y); % FFT of y
+    yf = fft2(y); %   FFT of y.\
 
     interp_sz = use_sz;
 
-    % Construct cosine window
+    % construct cosine window
     cos_window = single(hann(use_sz(1) + 2) * hann(use_sz(2) + 2)');
     cos_window = cos_window(2:end - 1, 2:end - 1);
 
-    % Load the first image to check for color
-    im = read_frame_image(video_path, s_frames{1});
+    try
+        im = imread([video_path '/img/' s_frames{1}]);
+    catch
 
-    % Check if image is color
+        try
+            im = imread(s_frames{1});
+        catch
+            im = imread([video_path '/' s_frames{1}]);
+        end
+
+    end
+
     if size(im, 3) == 3
 
         if all(all(im(:, :, 1) == im(:, :, 2)))
@@ -105,7 +98,7 @@ function [results] = AutoTrack_optimized(params)
         colorImage = false;
     end
 
-    % Compute feature dimensionality
+    % compute feature dimensionality
     feature_dim = 0;
 
     for n = 1:length(features)
@@ -128,7 +121,7 @@ function [results] = AutoTrack_optimized(params)
         im = im(:, :, 1);
     end
 
-    %% Scale Adaptation Initialization
+    %% SCALE ADAPTATION INITIALIZATION
     % Use the translation filter to estimate the scale
     scale_sigma = sqrt(num_scales) * scale_sigma_factor;
     ss = (1:num_scales) - ceil(num_scales / 2);
@@ -155,30 +148,39 @@ function [results] = AutoTrack_optimized(params)
 
     scale_model_sz = floor(target_sz * scale_model_factor);
 
-    % Set maximum and minimum scales
+    % set maximum and minimum scales
     min_scale_factor = scale_step ^ ceil(log(max(5 ./ sz)) / log(scale_step));
     max_scale_factor = scale_step ^ floor(log(min([size(im, 1) size(im, 2)] ./ base_target_sz)) / log(scale_step));
 
-    % Pre-compute the grid that is used for score optimization
+    % Pre-computes the grid that is used for score optimization
     ky = circshift(-floor((use_sz(1) - 1) / 2):ceil((use_sz(1) - 1) / 2), [1, -floor((use_sz(1) - 1) / 2)]);
     kx = circshift(-floor((use_sz(2) - 1) / 2):ceil((use_sz(2) - 1) / 2), [1, -floor((use_sz(2) - 1) / 2)])';
 
-    % Initialize the projection matrix (x,y,h,w)
+    % initialize the projection matrix (x,y,h,w)
     rect_position = zeros(num_frames, 4);
     time = 0;
     loop_frame = 1;
 
-    %% Main Loop
     for frame = 1:num_frames
-        % Load image
-        im = read_frame_image(video_path, s_frames{frame});
+        %load image
+        try
+            im = imread([video_path '/img/' s_frames{frame}]);
+        catch
+
+            try
+                im = imread([s_frames{frame}]);
+            catch
+                im = imread([video_path '/' s_frames{frame}]);
+            end
+
+        end
 
         if size(im, 3) > 1 && colorImage == false
             im = im(:, :, 1);
         end
 
         tic();
-
+        %% main loop
         occ = false;
 
         if frame > 1
@@ -217,24 +219,23 @@ function [results] = AutoTrack_optimized(params)
                 w(range_h, range_w) = varience;
             end
 
-            % Save response in last frame
+            % save response in last frame
             response_pre = response;
-            % Save translation of response in last frame
+            % save translation of response in last frame
             disp_row_pre = disp_row;
             disp_col_pre = disp_col;
-
-            % Calculate translation
+            % calculate translation
             translation_vec = round([disp_row, disp_col] * featureRatio * currentScaleFactor);
-            % Update position
+            %update position
             pos = pos + translation_vec;
 
-            %% Scale Search
+            %%Scale Search
             xs = crop_scale_sample(im, pos, base_target_sz, currentScaleFactor * scaleFactors, scale_window, scale_model_sz);
             xsf = fft(xs, [], 2);
             scale_response = real(ifft(sum(sf_num .* xsf, 1) ./ (sf_den + scale_lambda)));
-            % Find the maximum scale response
+            % find the maximum scale response
             recovered_scale = find(scale_response == max(scale_response(:)), 1);
-            % Update the scale
+            % update the scale
             currentScaleFactor = currentScaleFactor * scaleFactors(recovered_scale);
 
             if currentScaleFactor < min_scale_factor
@@ -247,18 +248,17 @@ function [results] = AutoTrack_optimized(params)
 
         target_sz = round(base_target_sz * currentScaleFactor);
 
-        % Save position
+        %save position
         rect_position(loop_frame, :) = [pos([2, 1]) - (target_sz([2, 1])) / 2, target_sz([2, 1])];
 
-        %% Training
         if frame == 1
-            % Extract training sample image region
+            % extract training sample image region
             pixels = get_pixels(im, pos, round(sz * currentScaleFactor), sz);
             pixels = uint8(gather(pixels));
             x = get_features(pixels, features, global_feat_params);
             xf = fft2(bsxfun(@times, x, cos_window));
         else
-            % Use detection features
+            % use detection features
             shift_samp_pos = 2 * pi * translation_vec ./ (currentScaleFactor * sz);
             xf = shift_sample(xtf, shift_samp_pos, kx', ky');
         end
@@ -276,7 +276,7 @@ function [results] = AutoTrack_optimized(params)
             h_f = g_f;
             l_f = h_f;
             gamma = 1;
-            beta = 10;
+            betha = 10;
             gamma_max = 10000;
 
             % ADMM solution
@@ -287,22 +287,19 @@ function [results] = AutoTrack_optimized(params)
             iter = 1;
 
             while (iter <= admm_iterations)
-                % Subproblem g
+                % subproblem g
                 B = S_xx + T * (gamma + mu);
                 Shx_f = sum(conj(xf) .* h_f, 3);
                 Slx_f = sum(conj(xf) .* l_f, 3);
-
                 g_f = ((1 / (T * (gamma + mu)) * bsxfun(@times, yf, xf)) - ((1 / (gamma + mu)) * l_f) + (gamma / (gamma + mu)) * h_f) + (mu / (gamma + mu)) * g_pre - ...
                     bsxfun(@rdivide, (1 / (T * (gamma + mu)) * bsxfun(@times, xf, (S_xx .* yf)) + (mu / (gamma + mu)) * Sgx_pre - ...
                     (1 / (gamma + mu)) * (bsxfun(@times, xf, Slx_f)) + (gamma / (gamma + mu)) * (bsxfun(@times, xf, Shx_f))), B);
-
-                % Subproblem h
+                %   subproblem h
                 lhd = T ./ (lambda * w .^ 2 + gamma * T);
                 X = ifft2(gamma * (g_f + l_f));
                 h = bsxfun(@times, lhd, X);
                 h_f = fft2(h);
-
-                % Subproblem mu
+                %   subproblem mu
                 if frame > 2 && iter < admm_iterations
 
                     for i = 1:size(g_f, 3)
@@ -312,20 +309,19 @@ function [results] = AutoTrack_optimized(params)
 
                 end
 
-                % Update Lagrangian multiplier l_f
+                %   update h
                 l_f = l_f + (gamma * (g_f - h_f));
-
-                % Update gamma
-                gamma = min(beta * gamma, gamma_max);
+                %   update gamma
+                gamma = min(betha * gamma, gamma_max);
                 iter = iter + 1;
             end
 
         end
 
-        % Save the trained filters
+        % save the trained filters
         g_pre = g_f;
 
-        %% Update Scale Filter
+        %% Upadate Scale
         if frame == 1
             xs = crop_scale_sample(im, pos, base_target_sz, currentScaleFactor * scaleFactors, scale_window, scale_model_sz);
         else
@@ -348,7 +344,7 @@ function [results] = AutoTrack_optimized(params)
         target_sz = base_target_sz * currentScaleFactor;
         time = time + toc();
 
-        %% Visualization
+        %%   visualization
         if visualization == 1
             rect_position_vis = [pos([2, 1]) - target_sz([2, 1]) / 2, target_sz([2, 1])];
             figure(1);
@@ -373,26 +369,10 @@ function [results] = AutoTrack_optimized(params)
         loop_frame = loop_frame + 1;
     end
 
-    % Save results
+    %   save resutls.
     fps = loop_frame / time;
     results.type = 'rect';
     results.res = rect_position;
     results.fps = fps;
-
-end
-
-function im = read_frame_image(video_path, frame_name)
-    % Helper function to read image from various possible paths
-    try
-        im = imread([video_path '/img/' frame_name]);
-    catch
-
-        try
-            im = imread(frame_name);
-        catch
-            im = imread([video_path '/' frame_name]);
-        end
-
-    end
 
 end
