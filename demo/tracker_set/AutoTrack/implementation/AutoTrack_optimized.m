@@ -16,7 +16,7 @@ function [results] = AutoTrack_optimized(params)
     delta = params.delta;
     zeta = params.zeta;
     nu = params.nu;
-    
+
     % Scale parameters
     search_area_scale = params.search_area_scale;
     max_image_sample_size = params.max_image_sample_size;
@@ -28,12 +28,12 @@ function [results] = AutoTrack_optimized(params)
     scale_lambda = params.scale_lambda;
     scale_model_factor = params.scale_model_factor;
     scale_model_max_area = params.scale_model_max_area;
-    
+
     % Feature parameters
     features = params.t_features;
     featureRatio = params.t_global.cell_size;
     global_feat_params = params.t_global;
-    
+
     % Video and processing parameters
     video_path = params.video_path;
     s_frames = params.s_frames;
@@ -94,18 +94,22 @@ function [results] = AutoTrack_optimized(params)
 
     % Check if image is color
     if size(im, 3) == 3
+
         if all(all(im(:, :, 1) == im(:, :, 2)))
             colorImage = false;
         else
             colorImage = true;
         end
+
     else
         colorImage = false;
     end
 
     % Compute feature dimensionality
     feature_dim = 0;
+
     for n = 1:length(features)
+
         if ~isfield(features{n}.fparams, 'useForColor')
             features{n}.fparams.useForColor = true;
         end
@@ -117,6 +121,7 @@ function [results] = AutoTrack_optimized(params)
         if (features{n}.fparams.useForColor && colorImage) || (features{n}.fparams.useForGray && ~colorImage)
             feature_dim = feature_dim + features{n}.fparams.nDim;
         end
+
     end
 
     if size(im, 3) > 1 && colorImage == false
@@ -173,36 +178,43 @@ function [results] = AutoTrack_optimized(params)
         end
 
         tic();
-        
+
         occ = false;
 
         if frame > 1
-            % Extract features for detection
-            pixel_template = get_pixels(im, pos, round(sz * currentScaleFactor), sz);
-            xt = get_features(pixel_template, features, global_feat_params);
-            xtf = fft2(bsxfun(@times, xt, cos_window));
-            
-            % Compute response
+            pixel_template = get_pixels(im, pos, round(sz * currentScaleFactor), sz); %从当前帧提取像素模板
+            xt = get_features(pixel_template, features, global_feat_params); %获取像素模板的特征
+            xtf = fft2(bsxfun(@times, xt, cos_window)); %对特征进行加窗以减少边界效应和傅里叶变换
+            %通过将之前训练得到的滤波器g_f与当前帧的特征频域表示xtf的共轭相乘并求和，得到频域响应。permute函数用于重新排列维度，以便后续处理
             responsef = permute(sum(bsxfun(@times, conj(g_f), xtf), 3), [1 2 4 3]);
-            
-            % Interpolate response if needed
+            % if we undersampled features, we want to interpolate the
+            % response so it has the same size as the image patch
+            %果响应的尺寸小于图像补丁的尺寸（即特征被欠采样），则使用resizeDFT2函数对响应的频域表示进行插值，使其尺寸与图像补丁匹配。interp_sz是插值后的尺寸
             responsef_padded = resizeDFT2(responsef, interp_sz);
-            
-            % Response in the spatial domain
+            % response in the spatial domain
+            %使用ifft2函数将频域响应responsef_padded逆变换回空间域，得到空间域响应response。'symmetric'参数确保了逆变换结果的对称性
             response = ifft2(responsef_padded, 'symmetric');
-            
-            % Find maximum peak
+            % find maximum peak
+            %通过resp_newton函数寻找响应response的最大峰值的位置。ky和kx是用于构建网格的参数，newton_iterations是牛顿法的迭代次数。disp_row和disp_col表示相对于当前目标位置的最大响应位置的偏移量。
             [disp_row, disp_col] = resp_newton(response, responsef_padded, newton_iterations, ky, kx, use_sz);
-            
-            % Update reference mu for ADMM
+
+            % update reference mu for Admm
             if frame > 2
+                % 将当前帧和前一帧的响应（response 和 response_pre）进行循环偏移。
+                % 偏移的量分别是 disp_row 和 disp_col，即目标在当前帧相对于前一帧的位移。通过这种方式，可以将响应调整到与目标实际位置一致的参考系
                 response_shift = circshift(response, [-floor(disp_row) -floor(disp_col)]);
                 response_pre_shift = circshift(response_pre, [-floor(disp_row_pre) -floor(disp_col_pre)]);
+
+                % 计算响应查
                 response_diff = abs(abs(response_shift - response_pre_shift) ./ response_pre_shift);
+
                 [ref_mu, occ] = updateRefmu(response_diff, zeta, nu, frame);
                 response_diff = circshift(response_diff, floor(size(response_diff) / 2));
-                variance = delta * log(response_diff(range_h, range_w) + 1);
-                w(range_h, range_w) = variance; %#ok<AGROW>
+                % 计算目标区域内的响应方差 varience
+                varience = delta * log(response_diff(range_h, range_w) + 1);
+
+                % 将计算得到的方差值赋给权重矩阵 w 中对应的目标区域部分
+                w(range_h, range_w) = varience;
             end
 
             % Save response in last frame
@@ -210,7 +222,7 @@ function [results] = AutoTrack_optimized(params)
             % Save translation of response in last frame
             disp_row_pre = disp_row;
             disp_col_pre = disp_col;
-            
+
             % Calculate translation
             translation_vec = round([disp_row, disp_col] * featureRatio * currentScaleFactor);
             % Update position
@@ -230,6 +242,7 @@ function [results] = AutoTrack_optimized(params)
             elseif currentScaleFactor > max_scale_factor
                 currentScaleFactor = max_scale_factor;
             end
+
         end
 
         target_sz = round(base_target_sz * currentScaleFactor);
@@ -278,32 +291,35 @@ function [results] = AutoTrack_optimized(params)
                 B = S_xx + T * (gamma + mu);
                 Shx_f = sum(conj(xf) .* h_f, 3);
                 Slx_f = sum(conj(xf) .* l_f, 3);
-                
+
                 g_f = ((1 / (T * (gamma + mu)) * bsxfun(@times, yf, xf)) - ((1 / (gamma + mu)) * l_f) + (gamma / (gamma + mu)) * h_f) + (mu / (gamma + mu)) * g_pre - ...
                     bsxfun(@rdivide, (1 / (T * (gamma + mu)) * bsxfun(@times, xf, (S_xx .* yf)) + (mu / (gamma + mu)) * Sgx_pre - ...
                     (1 / (gamma + mu)) * (bsxfun(@times, xf, Slx_f)) + (gamma / (gamma + mu)) * (bsxfun(@times, xf, Shx_f))), B);
-                
+
                 % Subproblem h
                 lhd = T ./ (lambda * w .^ 2 + gamma * T);
                 X = ifft2(gamma * (g_f + l_f));
                 h = bsxfun(@times, lhd, X);
                 h_f = fft2(h);
-                
+
                 % Subproblem mu
                 if frame > 2 && iter < admm_iterations
+
                     for i = 1:size(g_f, 3)
                         z = power(norm(g_f(i) - g_pre(i), 2), 2) / (2 * epsilon);
                         mu = ref_mu - z;
                     end
+
                 end
 
                 % Update Lagrangian multiplier l_f
                 l_f = l_f + (gamma * (g_f - h_f));
-                
+
                 % Update gamma
                 gamma = min(beta * gamma, gamma_max);
                 iter = iter + 1;
             end
+
         end
 
         % Save the trained filters
@@ -370,10 +386,13 @@ function im = read_frame_image(video_path, frame_name)
     try
         im = imread([video_path '/img/' frame_name]);
     catch
+
         try
             im = imread(frame_name);
         catch
             im = imread([video_path '/' frame_name]);
         end
+
     end
+
 end
