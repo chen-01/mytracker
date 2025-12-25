@@ -187,6 +187,7 @@ function [results] = AutoTrack_optimized(params)
         occ = false;
 
         if frame > 1
+            %% 1.Translation Estimation
             pixel_template = get_pixels(im, pos, round(sz * currentScaleFactor), sz); %从当前帧提取像素模板
             xt = get_features(pixel_template, features, global_feat_params); %获取像素模板的特征
             xtf = fft2(bsxfun(@times, xt, cos_window)); %对特征进行加窗以减少边界效应和傅里叶变换
@@ -269,15 +270,15 @@ function [results] = AutoTrack_optimized(params)
         if frame == 1
             [range_h, range_w, w] = init_regwindow(use_sz, reg_sz, params);
             g_pre = zeros(size(xf));
-            mu = 0;
+            mu = 0; % 时间正则化系数
         else
             mu = zeta;
         end
 
         if ~occ
-            g_f = single(zeros(size(xf)));
-            h_f = g_f;
-            l_f = h_f;
+            g_f = single(zeros(size(xf))); % 频域滤波更新
+            h_f = g_f; % 空间正则化系数
+            l_f = h_f; % ADMM 的拉格朗日乘子
             gamma = 1;
             betha = 10;
             gamma_max = 10000;
@@ -336,6 +337,7 @@ function [results] = AutoTrack_optimized(params)
         new_sf_den = sum(xsf .* conj(xsf), 1);
 
         if frame == 1
+            % 缩放滤波器分子和分母
             sf_den = new_sf_den;
             sf_num = new_sf_num;
         else
