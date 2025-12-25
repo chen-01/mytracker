@@ -27,12 +27,13 @@ function [results] = AutoTrack_optimized(params)
     zeta = params.zeta;
     newton_iterations = params.newton_iterations;
     featureRatio = params.t_global.cell_size;
-    search_area = prod(target_sz * search_area_scale);
+    search_area = prod(target_sz * search_area_scale); % prod 函数用于计算数组元素的乘积
     global_feat_params = params.t_global;
     nu = params.nu;
 
+    % 计算当前缩放系数
     if search_area > max_image_sample_size
-        currentScaleFactor = sqrt(search_area / max_image_sample_size);
+        currentScaleFactor = sqrt(search_area / max_image_sample_size); % sqrt计算平方根
     elseif search_area < min_image_sample_size
         currentScaleFactor = sqrt(search_area / min_image_sample_size);
     else
@@ -42,6 +43,7 @@ function [results] = AutoTrack_optimized(params)
     % target size at the initial scale
     base_target_sz = target_sz / currentScaleFactor;
     reg_sz = floor(base_target_sz / featureRatio);
+
     % window size, taking padding into account
     switch params.search_area_shape
         case 'proportional'
@@ -74,6 +76,7 @@ function [results] = AutoTrack_optimized(params)
     cos_window = single(hann(use_sz(1) + 2) * hann(use_sz(2) + 2)');
     cos_window = cos_window(2:end - 1, 2:end - 1);
 
+    % 确定图像颜色
     try
         im = imread([video_path '/img/' s_frames{1}]);
     catch
@@ -207,7 +210,7 @@ function [results] = AutoTrack_optimized(params)
                 response_shift = circshift(response, [-floor(disp_row) -floor(disp_col)]);
                 response_pre_shift = circshift(response_pre, [-floor(disp_row_pre) -floor(disp_col_pre)]);
 
-                % 计算响应查
+                % 计算响应差
                 response_diff = abs(abs(response_shift - response_pre_shift) ./ response_pre_shift);
 
                 [ref_mu, occ] = updateRefmu(response_diff, zeta, nu, frame);
@@ -346,24 +349,7 @@ function [results] = AutoTrack_optimized(params)
 
         %%   visualization
         if visualization == 1
-            rect_position_vis = [pos([2, 1]) - target_sz([2, 1]) / 2, target_sz([2, 1])];
-            figure(1);
-            imshow(im);
-            hold on;
-
-            if frame == 1
-                rectangle('Position', rect_position_vis, 'EdgeColor', 'g', 'LineWidth', 2);
-                text(12, 26, ['# Frame : ' int2str(loop_frame) ' / ' int2str(num_frames)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
-            else
-                rectangle('Position', rect_position_vis, 'EdgeColor', 'g', 'LineWidth', 2);
-                search_rect_vis = [pos([2, 1]) - sz * currentScaleFactor / 2, sz * currentScaleFactor];
-                rectangle('Position', search_rect_vis, 'EdgeColor', 'r', 'LineWidth', 2);
-                text(12, 28, ['# Frame : ' int2str(loop_frame) ' / ' int2str(num_frames)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
-                text(12, 66, ['FPS : ' num2str(1 / (time / loop_frame))], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
-            end
-
-            hold off;
-            drawnow
+            visualize_tracking(im, pos, target_sz, loop_frame, num_frames, time);
         end
 
         loop_frame = loop_frame + 1;
@@ -374,5 +360,23 @@ function [results] = AutoTrack_optimized(params)
     results.type = 'rect';
     results.res = rect_position;
     results.fps = fps;
+end
 
+% 可视化模块
+function visualize_tracking(im, pos, target_sz, loop_frame, num_frames, time)
+    figure(1);
+    imshow(im);
+    hold on;
+
+    rect_position_vis = [pos([2, 1]) - target_sz([2, 1]) / 2, target_sz([2, 1])];
+    rectangle('Position', rect_position_vis, 'EdgeColor', 'g', 'LineWidth', 2);
+
+    search_rect_vis = [pos([2, 1]) - sz * currentScaleFactor / 2, sz * currentScaleFactor];
+    rectangle('Position', search_rect_vis, 'EdgeColor', 'r', 'LineWidth', 2);
+
+    text(12, 28, ['# Frame : ' int2str(loop_frame) ' / ' int2str(num_frames)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
+    text(12, 66, ['FPS : ' num2str(1 / (time / loop_frame))], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
+
+    hold off;
+    drawnow;
 end
