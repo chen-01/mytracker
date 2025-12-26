@@ -165,12 +165,11 @@ function [results] = AutoTrack_optimized(params)
     loop_frame = 1;
     psr = 0;
     spr = 0;
-    max_val = 0;
     search_expansion = 1.0;
 
     for frame = 1:num_frames
         %load image
-        try
+         try
             im = imread([video_path '/img/' s_frames{frame}]);
         catch
 
@@ -206,7 +205,7 @@ function [results] = AutoTrack_optimized(params)
             %使用ifft2函数将频域响应responsef_padded逆变换回空间域，得到空间域响应response。'symmetric'参数确保了逆变换结果的对称性
             response = ifft2(responsef_padded, 'symmetric');
             psr = calculatePSR(response);
-            [spr, max_val,response] = positionCheck(response,psr);
+            [spr, response] = positionCheck(response,psr);
             % find maximum peak
             %通过resp_newton函数寻找响应response的最大峰值的位置。ky和kx是用于构建网格的参数，newton_iterations是牛顿法的迭代次数。disp_row和disp_col表示相对于当前目标位置的最大响应位置的偏移量。
             [disp_row, disp_col] = resp_newton(response, responsef_padded, newton_iterations, ky, kx, use_sz);
@@ -229,6 +228,7 @@ function [results] = AutoTrack_optimized(params)
                 % 将计算得到的方差值赋给权重矩阵 w 中对应的目标区域部分
                 w(range_h, range_w) = varience;
             end
+
             % save response in last frame
             response_pre = response;
             % save translation of response in last frame
@@ -281,7 +281,7 @@ function [results] = AutoTrack_optimized(params)
             mu = zeta;
         end
 
-        if frame > 1 && psr < 7.5&&spr>0.9
+        if frame > 1 && psr < 7.5
             occ = true;
             search_expansion = 2.0;
         else
@@ -378,7 +378,6 @@ function [results] = AutoTrack_optimized(params)
             text(12, 70, ['FPS : ' num2str(1 / (time / loop_frame))], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
             text(12, 110, ['PSR : ' num2str(psr)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
             text(12, 150, ['SPR : ' num2str(spr)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
-            text(12, 190, ['Max Val : ' num2str(max_val)], 'color', [1 0 0], 'BackgroundColor', [1 1 1], 'fontsize', 12);
 
             hold off;
             drawnow;
