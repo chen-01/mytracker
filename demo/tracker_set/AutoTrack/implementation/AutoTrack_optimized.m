@@ -26,7 +26,7 @@ function [results] = AutoTrack_optimized(params)
     delta = params.delta;
     zeta = params.zeta;
     newton_iterations = params.newton_iterations;
-    featureRatio = params.t_global.cell_size;
+    featureRatio = params.t_global.cell_size; %特征提取时使用的单元格大小
     search_area = prod(target_sz * search_area_scale); % prod 函数用于计算数组元素的乘积
     global_feat_params = params.t_global;
     nu = params.nu;
@@ -77,17 +77,7 @@ function [results] = AutoTrack_optimized(params)
     cos_window = cos_window(2:end - 1, 2:end - 1);
 
     % 确定图像颜色
-    try
-        im = imread([video_path '/img/' s_frames{1}]);
-    catch
-
-        try
-            im = imread(s_frames{1});
-        catch
-            im = imread([video_path '/' s_frames{1}]);
-        end
-
-    end
+    im = load_img(video_path, s_frames, 1);
 
     if size(im, 3) == 3
 
@@ -167,20 +157,11 @@ function [results] = AutoTrack_optimized(params)
     spr = 0;
     max_val = 0;
     search_expansion = 1.0;
+    posPre = 0;
 
     for frame = 1:num_frames
         %load image
-        try
-            im = imread([video_path '/img/' s_frames{frame}]);
-        catch
-
-            try
-                im = imread([s_frames{frame}]);
-            catch
-                im = imread([video_path '/' s_frames{frame}]);
-            end
-
-        end
+        im = load_img(video_path, s_frames, frame);
 
         if size(im, 3) > 1 && colorImage == false
             im = im(:, :, 1);
@@ -193,7 +174,7 @@ function [results] = AutoTrack_optimized(params)
 
         if frame > 1
             %% 1.Translation Estimation
-            pixel_template = get_pixels(im, pos, round(sz * currentScaleFactor), sz); %从当前帧提取像素模板
+            pixel_template = get_pixels(im, pos, round(sz * currentScaleFactor * current_search_expansion), sz); %从当前帧提取像素模板
             xt = get_features(pixel_template, features, global_feat_params); %获取像素模板的特征
             xtf = fft2(bsxfun(@times, xt, cos_window)); %对特征进行加窗以减少边界效应和傅里叶变换
             %通过将之前训练得到的滤波器g_f与当前帧的特征频域表示xtf的共轭相乘并求和，得到频域响应。permute函数用于重新排列维度，以便后续处理
@@ -206,7 +187,7 @@ function [results] = AutoTrack_optimized(params)
             %使用ifft2函数将频域响应responsef_padded逆变换回空间域，得到空间域响应response。'symmetric'参数确保了逆变换结果的对称性
             response = ifft2(responsef_padded, 'symmetric');
             psr = calculatePSR(response);
-            [spr, max_val,response] = positionCheck(response,psr);
+            [spr, max_val, response] = positionCheck(response, psr);
             % find maximum peak
             %通过resp_newton函数寻找响应response的最大峰值的位置。ky和kx是用于构建网格的参数，newton_iterations是牛顿法的迭代次数。disp_row和disp_col表示相对于当前目标位置的最大响应位置的偏移量。
             [disp_row, disp_col] = resp_newton(response, responsef_padded, newton_iterations, ky, kx, use_sz);
@@ -229,6 +210,7 @@ function [results] = AutoTrack_optimized(params)
                 % 将计算得到的方差值赋给权重矩阵 w 中对应的目标区域部分
                 w(range_h, range_w) = varience;
             end
+
             % save response in last frame
             response_pre = response;
             % save translation of response in last frame
@@ -238,7 +220,9 @@ function [results] = AutoTrack_optimized(params)
             translation_vec = round([disp_row, disp_col] * featureRatio * currentScaleFactor);
             %update position
             pos = pos + translation_vec;
-
+            posPre = pos;
+            posPreEval = positionEval();
+            dist = pdist2(pos, pospre, 'euclidean')
             %%Scale Search
             xs = crop_scale_sample(im, pos, base_target_sz, currentScaleFactor * scaleFactors, scale_window, scale_model_sz);
             xsf = fft(xs, [], 2);
@@ -281,7 +265,7 @@ function [results] = AutoTrack_optimized(params)
             mu = zeta;
         end
 
-        if frame > 1 && psr < 7.5&&spr>0.9
+        if frame > 1 && psr < 7.5 && spr > 0.9
             occ = true;
             search_expansion = 2.0;
         else
